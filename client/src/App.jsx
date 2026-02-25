@@ -48,6 +48,112 @@ function fmtAge(ms) {
   return `${h}시간`;
 }
 
+function SessionPanel({ selectedKey, sessions, cron, onCronAction }) {
+  const sess = sessions.find((s) => s.key === selectedKey);
+  if (!sess) {
+    return (
+      <Card className="md:col-span-1 border-muted">
+        <CardHeader>
+          <CardTitle className="text-base">세션 상세</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="text-sm text-muted-foreground">자비스: 왼쪽에서 세션을 선택해주세용.</div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const kind = (() => {
+    if (sess.key.includes(":cron:") && sess.key.includes(":run:")) return "run";
+    if (sess.key.includes(":cron:")) return "cron";
+    if (sess.key.includes(":group:")) return "group";
+    if (sess.key.includes(":channel:")) return "channel";
+    return "direct";
+  })();
+
+  const m = String(sess.key).match(/:cron:([0-9a-f\-]{8,})/i);
+  const jobId = m?.[1];
+  const job = jobId ? (cron?.jobs || []).find((j) => j.id === jobId) : null;
+  const st = job?.state || {};
+
+  return (
+    <Card className="md:col-span-1 border-muted">
+      <CardHeader>
+        <CardTitle className="text-base">세션 상세</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        <div>
+          <div className="text-xs text-muted-foreground">키</div>
+          <div className="font-mono text-xs break-all">{sess.key}</div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <div className="text-xs text-muted-foreground">에이전트</div>
+            <div>{sess.agentId}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">종류</div>
+            <div>{kind}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">업데이트</div>
+            <div>{fmtTs(sess.updatedAt)}</div>
+            <div className="text-xs text-muted-foreground">경과 {fmtAge(sess.ageMs)}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">모델</div>
+            <div className="text-xs">{sess.modelProvider}/{sess.model}</div>
+          </div>
+        </div>
+
+        <div>
+          <div className="text-xs text-muted-foreground">토큰</div>
+          <div className="flex flex-wrap gap-1">
+            <Badge variant="outline">입력 {sess.inputTokens ?? "-"}</Badge>
+            <Badge variant="outline">출력 {sess.outputTokens ?? "-"}</Badge>
+            <Badge variant="outline">합계 {sess.totalTokens ?? "-"}</Badge>
+          </div>
+        </div>
+
+        {job ? (
+          <div className="space-y-2">
+            <div className="text-xs text-muted-foreground">연결된 크론 작업</div>
+            <div className="font-medium">{job.name || job.id}</div>
+            <div className="text-xs text-muted-foreground break-all">{job.id}</div>
+
+            <div className="flex flex-wrap gap-1">
+              <Badge variant={job.enabled ? "default" : "outline"}>{job.enabled ? "활성" : "비활성"}</Badge>
+              <Badge variant={(st.lastStatus === "error" || st.lastRunStatus === "error" || (st.consecutiveErrors || 0) > 0) ? "destructive" : "secondary"}>
+                {st.lastStatus || st.lastRunStatus || "-"}
+              </Badge>
+              <Badge variant="outline">연속 {st.consecutiveErrors || 0}</Badge>
+            </div>
+
+            {st.lastError ? (
+              <div className="rounded-md border p-2">
+                <div className="text-xs text-muted-foreground">최근 오류</div>
+                <div className="text-xs whitespace-pre-wrap break-words">{st.lastError}</div>
+              </div>
+            ) : null}
+
+            <div className="text-xs text-muted-foreground">다음 실행: {st.nextRunAtMs ? fmtTs(st.nextRunAtMs) : "-"}</div>
+
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" onClick={() => onCronAction(job, "run")}>즉시 실행</Button>
+              <Button size="sm" variant={job.enabled ? "destructive" : "default"} onClick={() => onCronAction(job, job.enabled ? "disable" : "enable")}>
+                {job.enabled ? "비활성화" : "활성화"}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="text-xs text-muted-foreground">자비스: 이 세션은 연결된 크론 작업이 없어요.</div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function CronAnalysis({ cron, cronTrends }) {
   if (!cronTrends?.rows || !cron) {
     return (
@@ -260,6 +366,9 @@ export default function App() {
   // Confirm dialog for cron actions
   const [confirm, setConfirm] = useState({ open: false, job: null, action: null });
 
+  // Sessions side panel
+  const [selectedSessionKey, setSelectedSessionKey] = useState(null);
+
   const refreshOverview = async () => {
     const data = await api("overview");
     setOverview(data);
@@ -314,6 +423,14 @@ export default function App() {
   const filteredSessions = useMemo(() => {
     if (!sessions?.sessions) return [];
     const q = query.trim().toLowerCase();
+
+    // join error text from live cron list (best-effort)
+    const cronErrByJobId = new Map();
+    for (const j of (cron?.jobs || [])) {
+      const st = j.state || {};
+      if (st.lastError) cronErrByJobId.set(j.id, String(st.lastError));
+    }
+
     return [...sessions.sessions]
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .filter((s) => {
@@ -321,11 +438,15 @@ export default function App() {
         const k = kindOfKey(s.key);
         if (!kinds[k]) return false;
         if (!q) return true;
-        // NOTE: errorText 검색은 다음 단계에서 cron job state.lastError 조인해서 추가
-        const hay = [s.key, s.agentId, s.kind, s.modelProvider, s.model].join(" ").toLowerCase();
+
+        const m = String(s.key || "").match(/:cron:([0-9a-f\-]{8,})/i);
+        const jobId = m?.[1];
+        const err = jobId ? (cronErrByJobId.get(jobId) || "") : "";
+
+        const hay = [s.key, s.agentId, s.kind, s.modelProvider, s.model, err].join(" ").toLowerCase();
         return hay.includes(q);
       });
-  }, [sessions, agentId, query, kinds]);
+  }, [sessions, agentId, query, kinds, cron]);
 
   const runCronAction = async (jobId, action) => {
     await api(`cron/${jobId}/${action}`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
@@ -458,8 +579,9 @@ export default function App() {
                   {!sessions ? (
                     <div className="text-sm text-muted-foreground">불러오는 중…</div>
                   ) : (
-                    <div className="max-h-[520px] overflow-auto rounded-md border">
-                      <table className="w-full text-sm">
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <div className="md:col-span-2 max-h-[520px] overflow-auto rounded-md border">
+                          <table className="w-full text-sm">
                         <thead className="sticky top-0 bg-background">
                           <tr className="border-b">
                             <th className="px-3 py-2 text-left">키</th>
@@ -472,8 +594,13 @@ export default function App() {
                           {filteredSessions.map((s) => {
                             const k = kindOfKey(s.key);
                             const kindLabel = ({ direct: "DM", cron: "CRON", run: "RUN", group: "GROUP", channel: "CHANNEL" })[k] || k;
+                            const selected = selectedSessionKey === s.key;
                             return (
-                              <tr key={s.key} className="border-b hover:bg-muted/50">
+                              <tr
+                                key={s.key}
+                                className={"border-b hover:bg-muted/50 cursor-pointer " + (selected ? "bg-muted/50" : "")}
+                                onClick={() => setSelectedSessionKey(s.key)}
+                              >
                                 <td className="px-3 py-2">
                                   <div className="flex flex-wrap gap-1">
                                     <Badge variant="outline">{s.agentId}</Badge>
@@ -501,6 +628,14 @@ export default function App() {
                           })}
                         </tbody>
                       </table>
+                      </div>
+
+                      <SessionPanel
+                        selectedKey={selectedSessionKey}
+                        sessions={sessions?.sessions || []}
+                        cron={cron}
+                        onCronAction={(job, action) => setConfirm({ open: true, job, action })}
+                      />
                     </div>
                   )}
                 </div>
