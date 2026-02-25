@@ -48,6 +48,137 @@ function fmtAge(ms) {
   return `${h}시간`;
 }
 
+function CronAnalysis({ cron, cronTrends }) {
+  if (!cronTrends?.rows || !cron) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>크론 분석(7일)</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="text-sm text-muted-foreground">자비스: 분석 데이터를 불러오는 중이에요…</div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const liveJobs = new Map((cron.jobs || []).map((j) => [j.id, j]));
+  const rows = cronTrends.rows;
+
+  // Aggregate per job
+  const byJob = new Map();
+  for (const r of rows) {
+    const j = byJob.get(r.job_id) || {
+      jobId: r.job_id,
+      agentId: r.agent_id,
+      enabled: !!r.enabled,
+      maxConsecutive: 0,
+      errorSamples: 0,
+      lastError: null,
+      lastTs: 0,
+    };
+    j.maxConsecutive = Math.max(j.maxConsecutive, Number(r.consecutive_errors || 0));
+    if (r.last_status === "error" || r.last_run_status === "error" || Number(r.consecutive_errors || 0) > 0) {
+      j.errorSamples += 1;
+      if (r.last_error && r.ts_ms >= j.lastTs) {
+        j.lastError = r.last_error;
+        j.lastTs = r.ts_ms;
+      }
+    }
+    byJob.set(r.job_id, j);
+  }
+
+  const jobStats = [...byJob.values()].map((j) => {
+    const live = liveJobs.get(j.jobId);
+    return {
+      ...j,
+      name: live?.name || j.jobId,
+      liveEnabled: live?.enabled,
+      liveLastStatus: live?.state?.lastStatus || live?.state?.lastRunStatus,
+      liveConsecutive: live?.state?.consecutiveErrors || 0,
+    };
+  });
+
+  const topConsecutive = [...jobStats]
+    .sort((a, b) => (b.maxConsecutive - a.maxConsecutive) || (b.errorSamples - a.errorSamples))
+    .slice(0, 10);
+
+  // Group error text
+  const errorGroups = new Map();
+  for (const j of jobStats) {
+    if (!j.lastError) continue;
+    const key = String(j.lastError).slice(0, 140);
+    errorGroups.set(key, (errorGroups.get(key) || 0) + 1);
+  }
+  const topErrors = [...errorGroups.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([text, count]) => ({ text, count }));
+
+  return (
+    <div className="grid gap-4 md:grid-cols-2">
+      <Card>
+        <CardHeader>
+          <CardTitle>7일 연속 오류 TOP</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-auto rounded-md border">
+            <table className="w-full text-sm">
+              <thead className="bg-background sticky top-0">
+                <tr className="border-b">
+                  <th className="px-3 py-2 text-left">작업</th>
+                  <th className="px-3 py-2 text-right">최대 연속</th>
+                  <th className="px-3 py-2 text-right">오류 샘플</th>
+                </tr>
+              </thead>
+              <tbody>
+                {topConsecutive.map((j) => (
+                  <tr key={j.jobId} className="border-b">
+                    <td className="px-3 py-2">
+                      <div className="font-medium">{j.name}</div>
+                      <div className="text-xs text-muted-foreground break-all">{j.jobId}</div>
+                      {j.lastError ? (
+                        <div className="mt-1 text-xs text-muted-foreground line-clamp-2">{j.lastError}</div>
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <Badge variant={j.maxConsecutive > 0 ? "destructive" : "secondary"}>{j.maxConsecutive}</Badge>
+                    </td>
+                    <td className="px-3 py-2 text-right">{j.errorSamples}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>오류 원인 TOP</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {topErrors.length === 0 ? (
+            <div className="text-sm text-muted-foreground">자비스: 최근 7일간 기록된 오류 원인이 없어요.</div>
+          ) : (
+            <div className="space-y-2">
+              {topErrors.map((e) => (
+                <div key={e.text} className="rounded-md border p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-sm font-medium">{e.count}건</div>
+                    <Badge variant="outline">TOP</Badge>
+                  </div>
+                  <div className="mt-2 text-xs text-muted-foreground whitespace-pre-wrap break-words">{e.text}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 function UsageCharts({ trendAgent }) {
   const rows = trendAgent.rows || [];
 
@@ -110,6 +241,7 @@ export default function App() {
 
   const [overview, setOverview] = useState(null);
   const [cron, setCron] = useState(null);
+  const [cronTrends, setCronTrends] = useState(null);
   const [sessions, setSessions] = useState(null);
   const [trendAgent, setTrendAgent] = useState(null);
 
@@ -133,8 +265,12 @@ export default function App() {
     setOverview(data);
   };
   const refreshCron = async () => {
-    const data = await api("cron");
-    setCron(data);
+    const [live, trends] = await Promise.all([
+      api("cron"),
+      api("trends/cron-jobs?days=7"),
+    ]);
+    setCron(live);
+    setCronTrends(trends);
   };
   const refreshSessions = async () => {
     const data = await api(`sessions?window=${encodeURIComponent(windowKey)}`);
@@ -373,70 +509,74 @@ export default function App() {
           </TabsContent>
 
           <TabsContent value="cron" className="mt-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>{T.cron.title}</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="text-xs text-muted-foreground">{T.cron.noteConfirm}</div>
+            <div className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle>{T.cron.title}</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="text-xs text-muted-foreground">{T.cron.noteConfirm}</div>
 
-                {!cron ? (
-                  <div className="text-sm text-muted-foreground">불러오는 중…</div>
-                ) : (
-                  <div className="max-h-[520px] overflow-auto rounded-md border">
-                    <table className="w-full text-sm">
-                      <thead className="sticky top-0 bg-background">
-                        <tr className="border-b">
-                          <th className="px-3 py-2 text-left">{T.cron.cols.job}</th>
-                          <th className="px-3 py-2 text-left">{T.cron.cols.schedule}</th>
-                          <th className="px-3 py-2 text-left">{T.cron.cols.enabled}</th>
-                          <th className="px-3 py-2 text-left">{T.cron.cols.last}</th>
-                          <th className="px-3 py-2 text-left">{T.cron.cols.actions}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {cron.jobs.map((j) => {
-                          const st = j.state || {};
-                          const bad = st.lastStatus === "error" || st.lastRunStatus === "error" || (st.consecutiveErrors || 0) > 0;
-                          return (
-                            <tr key={j.id} className="border-b hover:bg-muted/50">
-                              <td className="px-3 py-2">
-                                <div className="font-medium">{j.name || j.id}</div>
-                                <div className="text-xs text-muted-foreground">{j.id} · agent={j.agentId}</div>
-                              </td>
-                              <td className="px-3 py-2">
-                                <div>{j.schedule?.kind}</div>
-                                <div className="text-xs text-muted-foreground">{j.schedule?.expr}</div>
-                              </td>
-                              <td className="px-3 py-2">
-                                <Badge variant={j.enabled ? "default" : "outline"}>{j.enabled ? T.cron.enabled : T.cron.disabled}</Badge>
-                              </td>
-                              <td className="px-3 py-2">
-                                <Badge variant={bad ? "destructive" : "secondary"}>{st.lastStatus || st.lastRunStatus || "-"}</Badge>
-                                <div className="text-xs text-muted-foreground">{T.cron.nextRun}: {st.nextRunAtMs ? fmtTs(st.nextRunAtMs) : "-"}</div>
-                                {st.lastError ? <div className="text-xs text-muted-foreground line-clamp-2">{st.lastError}</div> : null}
-                              </td>
-                              <td className="px-3 py-2">
-                                <div className="flex flex-wrap gap-2">
-                                  <Button
-                                    size="sm"
-                                    variant={j.enabled ? "destructive" : "default"}
-                                    onClick={() => setConfirm({ open: true, job: j, action: j.enabled ? "disable" : "enable" })}
-                                  >
-                                    {j.enabled ? T.cron.disable : T.cron.enable}
-                                  </Button>
-                                  <Button size="sm" variant="outline" onClick={() => setConfirm({ open: true, job: j, action: "run" })}>{T.cron.runNow}</Button>
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+                  {!cron ? (
+                    <div className="text-sm text-muted-foreground">{T.status.loading}</div>
+                  ) : (
+                    <div className="max-h-[520px] overflow-auto rounded-md border">
+                      <table className="w-full text-sm">
+                        <thead className="sticky top-0 bg-background">
+                          <tr className="border-b">
+                            <th className="px-3 py-2 text-left">{T.cron.cols.job}</th>
+                            <th className="px-3 py-2 text-left">{T.cron.cols.schedule}</th>
+                            <th className="px-3 py-2 text-left">{T.cron.cols.enabled}</th>
+                            <th className="px-3 py-2 text-left">{T.cron.cols.last}</th>
+                            <th className="px-3 py-2 text-left">{T.cron.cols.actions}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {cron.jobs.map((j) => {
+                            const st = j.state || {};
+                            const bad = st.lastStatus === "error" || st.lastRunStatus === "error" || (st.consecutiveErrors || 0) > 0;
+                            return (
+                              <tr key={j.id} className="border-b hover:bg-muted/50">
+                                <td className="px-3 py-2">
+                                  <div className="font-medium">{j.name || j.id}</div>
+                                  <div className="text-xs text-muted-foreground">{j.id} · agent={j.agentId}</div>
+                                </td>
+                                <td className="px-3 py-2">
+                                  <div>{j.schedule?.kind}</div>
+                                  <div className="text-xs text-muted-foreground">{j.schedule?.expr}</div>
+                                </td>
+                                <td className="px-3 py-2">
+                                  <Badge variant={j.enabled ? "default" : "outline"}>{j.enabled ? T.cron.enabled : T.cron.disabled}</Badge>
+                                </td>
+                                <td className="px-3 py-2">
+                                  <Badge variant={bad ? "destructive" : "secondary"}>{st.lastStatus || st.lastRunStatus || "-"}</Badge>
+                                  <div className="text-xs text-muted-foreground">{T.cron.nextRun}: {st.nextRunAtMs ? fmtTs(st.nextRunAtMs) : "-"}</div>
+                                  {st.lastError ? <div className="text-xs text-muted-foreground line-clamp-2">{st.lastError}</div> : null}
+                                </td>
+                                <td className="px-3 py-2">
+                                  <div className="flex flex-wrap gap-2">
+                                    <Button
+                                      size="sm"
+                                      variant={j.enabled ? "destructive" : "default"}
+                                      onClick={() => setConfirm({ open: true, job: j, action: j.enabled ? "disable" : "enable" })}
+                                    >
+                                      {j.enabled ? T.cron.disable : T.cron.enable}
+                                    </Button>
+                                    <Button size="sm" variant="outline" onClick={() => setConfirm({ open: true, job: j, action: "run" })}>{T.cron.runNow}</Button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <CronAnalysis cron={cron} cronTrends={cronTrends} />
+            </div>
           </TabsContent>
 
           <TabsContent value="routing" className="mt-4">
