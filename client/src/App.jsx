@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/dialog";
 import { Toaster } from "@/components/ui/toaster";
 import { useToast } from "@/hooks/use-toast";
+import { TrendLineChart } from "@/components/TrendLineChart";
 
 async function api(path, opts) {
   const res = await fetch(`/api/${path}`, opts);
@@ -47,6 +48,62 @@ function fmtAge(ms) {
   return `${h}시간`;
 }
 
+function UsageCharts({ trendAgent }) {
+  const rows = trendAgent.rows || [];
+
+  // downsample: take one point per 5 minutes per agent to keep chart light
+  const byAgent = {};
+  for (const r of rows) {
+    (byAgent[r.agent_id] ||= []).push(r);
+  }
+
+  const charts = Object.entries(byAgent).map(([agentId, points]) => {
+    points.sort((a, b) => a.ts_ms - b.ts_ms);
+    const sampled = [];
+    let lastBucket = -1;
+    for (const p of points) {
+      const bucket = Math.floor(p.ts_ms / (5 * 60 * 1000));
+      if (bucket === lastBucket) continue;
+      lastBucket = bucket;
+      sampled.push({
+        tsMs: p.ts_ms,
+        tsLabel: "·",
+        cronErrors: p.cron_errors,
+        tokens24h: p.tokens_24h_total,
+        sessions: p.sessions_active,
+      });
+    }
+
+    return (
+      <Card key={agentId} className="border-muted">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">{agentId} · 크론 오류(B) / 토큰(A)</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div>
+            <div className="mb-2 text-sm text-muted-foreground">크론 오류 추이 (B)</div>
+            <TrendLineChart
+              data={sampled}
+              lines={[{ key: "cronErrors", name: "크론 오류", color: "#ef4444" }]}
+              height={240}
+            />
+          </div>
+          <div>
+            <div className="mb-2 text-sm text-muted-foreground">토큰(24h 합계) 추이 (A)</div>
+            <TrendLineChart
+              data={sampled}
+              lines={[{ key: "tokens24h", name: "토큰(24h)", color: "#22c55e" }]}
+              height={240}
+            />
+          </div>
+        </CardContent>
+      </Card>
+    );
+  });
+
+  return <div className="grid gap-4 md:grid-cols-2">{charts}</div>;
+}
+
 export default function App() {
   const { toast } = useToast();
   const [tab, setTab] = useState("overview");
@@ -54,6 +111,7 @@ export default function App() {
   const [overview, setOverview] = useState(null);
   const [cron, setCron] = useState(null);
   const [sessions, setSessions] = useState(null);
+  const [trendAgent, setTrendAgent] = useState(null);
 
   // Sessions UI state
   const [windowKey, setWindowKey] = useState("24h");
@@ -83,6 +141,11 @@ export default function App() {
     setSessions(data);
   };
 
+  const refreshTrends = async () => {
+    const data = await api("trends/agent-metrics?days=7");
+    setTrendAgent(data);
+  };
+
   useEffect(() => {
     refreshOverview().catch((e) => toast({ title: T.status.error, description: e.message, variant: "destructive" }));
   }, []);
@@ -90,6 +153,7 @@ export default function App() {
   useEffect(() => {
     if (tab === "cron") refreshCron().catch((e) => toast({ title: T.status.error, description: e.message, variant: "destructive" }));
     if (tab === "sessions") refreshSessions().catch((e) => toast({ title: T.status.error, description: e.message, variant: "destructive" }));
+    if (tab === "usage") refreshTrends().catch((e) => toast({ title: T.status.error, description: e.message, variant: "destructive" }));
   }, [tab]);
 
   useEffect(() => {
@@ -388,11 +452,13 @@ export default function App() {
 
           <TabsContent value="usage" className="mt-4">
             <Card>
-              <CardHeader><CardTitle>사용량</CardTitle></CardHeader>
-              <CardContent>
-                <div className="text-sm text-muted-foreground">
-                  다음 단계에서 7일 그래프(B→A→C)를 붙일게요.
-                </div>
+              <CardHeader><CardTitle>사용량(7일)</CardTitle></CardHeader>
+              <CardContent className="space-y-4">
+                {!trendAgent ? (
+                  <div className="text-sm text-muted-foreground">{T.status.loading}</div>
+                ) : (
+                  <UsageCharts trendAgent={trendAgent} />
+                )}
               </CardContent>
             </Card>
           </TabsContent>
