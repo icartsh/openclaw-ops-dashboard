@@ -1,0 +1,97 @@
+export const KO = {
+  app: {
+    title: "자비스 운영 대시보드",
+    subtitle: "라이언 전용",
+  },
+  topbar: {
+    refresh: "새로고침",
+    openclawOps: "OpenClaw 대시보드(/ops)",
+  },
+  tabs: {
+    overview: "A) 에이전트 개요",
+    sessions: "B) 세션",
+    cron: "C) 크론 작업",
+    routing: "D) 라우팅",
+    usage: "E) 사용량",
+  },
+  status: {
+    loading: "자비스: 불러오는 중이에요…",
+    ok: "자비스: 정상이에요",
+    error: "자비스: 오류가 났어요",
+  },
+  confirm: {
+    title: "확인",
+    desc: "자비스: 이 작업 실행해도 될까용?",
+    cancel: "취소",
+    run: "실행",
+  },
+  cron: {
+    title: "크론 작업",
+    noteConfirm: "※ 버튼 클릭 시 확인창이 먼저 떠요.",
+    cols: {
+      job: "작업",
+      schedule: "스케줄",
+      enabled: "상태",
+      last: "최근 결과",
+      actions: "조작",
+    },
+    enabled: "활성",
+    disabled: "비활성",
+    disable: "비활성화",
+    enable: "활성화",
+    runNow: "즉시 실행",
+    nextRun: "다음 실행",
+  },
+  sessions: {
+    title: "세션",
+    scope: {
+      label: "표시 범위",
+      h24: "최근 24시간",
+      d7: "최근 7일",
+      d30: "최근 30일",
+    },
+    agent: {
+      label: "에이전트",
+      all: "전체",
+      jarvis: "자비스(main)",
+      haru: "하루(coding)",
+    },
+    searchPlaceholder: "검색(키/모델/에이전트/종류/에러)",
+    kinds: {
+      direct: "DM",
+      cron: "CRON",
+      run: "RUN",
+      group: "GROUP",
+      channel: "CHANNEL",
+    },
+    showing: "표시",
+    total: "전체",
+    cols: {
+      key: "키",
+      updated: "업데이트",
+      model: "모델",
+      tokens: "토큰",
+    },
+    elapsed: "경과",
+    tokens: {
+      in: "입력",
+      out: "출력",
+      total: "합계",
+    },
+  },
+  overview: {
+    agentsTitle: "에이전트",
+    updatedAt: "업데이트",
+    cached: "캐시",
+    kpi: {
+      sessions: "세션",
+      tokens24h: "토큰(24h)",
+      cronJobs: "크론",
+      cronErrors: "크론 오류",
+    },
+    role: {
+      jarvis: "자비스 · 개인비서",
+      haru: "하루 · 개발자",
+    },
+  },
+};
