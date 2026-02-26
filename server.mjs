@@ -402,8 +402,30 @@ function looksIdlePrompt(lastLines) {
   const s = String(lastLines).trim();
   if (!s) return false;
   const lines = s.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  const last = lines[lines.length - 1] || "";
-  return last === "❯" || last.startsWith("❯ ");
+  const nearEnd = lines.slice(-6);
+  const lastTwo = nearEnd.slice(-2);
+
+  if (lastTwo.some((line) => /^❯(?:\s.*)?$/.test(line))) {
+    return true;
+  }
+
+  const strongPrompts = [
+    /\bpress\s+enter\b/i,
+    /\bwhat\s+next\b/i,
+    /\bcreate\s+(?:a\s+)?pr\b/i
+  ];
+  const weakPrompts = [
+    /\bcontinue\b/i,
+    /\bcommit\b/i
+  ];
+  const intentCues = /\?|(?:please|ready|waiting|awaiting|your turn|next step|now)\b/i;
+
+  for (const line of nearEnd.slice(-4).reverse()) {
+    if (strongPrompts.some((re) => re.test(line))) return true;
+    if (weakPrompts.some((re) => re.test(line)) && intentCues.test(line)) return true;
+  }
+
+  return false;
 }
 
 function tailLines(text, n = 10) {
