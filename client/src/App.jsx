@@ -349,12 +349,14 @@ export default function App() {
   const [cron, setCron] = useState(null);
   const [cronTrends, setCronTrends] = useState(null);
   const [sessions, setSessions] = useState(null);
+  const [routing, setRouting] = useState(null);
   const [trendAgent, setTrendAgent] = useState(null);
 
   // Sessions UI state
   const [windowKey, setWindowKey] = useState("24h");
   const [agentId, setAgentId] = useState("all");
   const [query, setQuery] = useState("");
+  const [routingQuery, setRoutingQuery] = useState("");
   const [kinds, setKinds] = useState({
     direct: true,
     cron: true,
@@ -390,6 +392,10 @@ export default function App() {
     const data = await api("trends/agent-metrics?days=7");
     setTrendAgent(data);
   };
+  const refreshRouting = async () => {
+    const data = await api("routing");
+    setRouting(data);
+  };
 
   useEffect(() => {
     refreshOverview().catch((e) => toast({ title: T.status.error, description: e.message, variant: "destructive" }));
@@ -398,6 +404,7 @@ export default function App() {
   useEffect(() => {
     if (tab === "cron") refreshCron().catch((e) => toast({ title: T.status.error, description: e.message, variant: "destructive" }));
     if (tab === "sessions") refreshSessions().catch((e) => toast({ title: T.status.error, description: e.message, variant: "destructive" }));
+    if (tab === "routing") refreshRouting().catch((e) => toast({ title: T.status.error, description: e.message, variant: "destructive" }));
     if (tab === "usage") refreshTrends().catch((e) => toast({ title: T.status.error, description: e.message, variant: "destructive" }));
   }, [tab]);
 
@@ -454,6 +461,19 @@ export default function App() {
     refreshCron().catch(() => {});
     refreshOverview().catch(() => {});
   };
+
+  const filteredRoutingRows = useMemo(() => {
+    const rows = routing?.rows || [];
+    const q = routingQuery.trim().toLowerCase();
+    if (!q) return rows;
+
+    return rows.filter((r) => {
+      const hay = [r.channel, r.accountId, r.peerLabel, r.peerKind, r.peerId, r.agentId, r.label]
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }, [routing, routingQuery]);
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -716,11 +736,66 @@ export default function App() {
 
           <TabsContent value="routing" className="mt-4">
             <Card>
-              <CardHeader><CardTitle>라우팅(바인딩)</CardTitle></CardHeader>
-              <CardContent>
-                <div className="text-sm text-muted-foreground">
-                  다음 단계에서 bindings 원문 테이블(채널/accountId/peer)을 예쁘게 렌더링할게요.
-                </div>
+              <CardHeader><CardTitle>{T.routing.title}</CardTitle></CardHeader>
+              <CardContent className="space-y-3">
+                {!routing ? (
+                  <div className="text-sm text-muted-foreground">{T.status.loading}</div>
+                ) : (
+                  <>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Input
+                        className="w-[340px]"
+                        placeholder={T.routing.searchPlaceholder}
+                        value={routingQuery}
+                        onChange={(e) => setRoutingQuery(e.target.value)}
+                      />
+                      <Badge variant="outline">{T.routing.rows}: {filteredRoutingRows.length}</Badge>
+                      <div className="text-xs text-muted-foreground">
+                        {T.routing.telegramAccounts}: {(routing.telegramAccounts || []).join(", ") || "-"}
+                      </div>
+                    </div>
+
+                    <div className="max-h-[520px] overflow-auto rounded-md border">
+                      <table className="w-full text-sm">
+                        <thead className="sticky top-0 bg-background">
+                          <tr className="border-b">
+                            <th className="px-3 py-2 text-left">{T.routing.cols.channel}</th>
+                            <th className="px-3 py-2 text-left">{T.routing.cols.accountId}</th>
+                            <th className="px-3 py-2 text-left">{T.routing.cols.peer}</th>
+                            <th className="px-3 py-2 text-left">{T.routing.cols.target}</th>
+                            <th className="px-3 py-2 text-left">{T.routing.cols.label}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filteredRoutingRows.map((r, idx) => (
+                            <tr key={`${r.agentId}-${r.channel}-${r.accountId}-${idx}`} className="border-b">
+                              <td className="px-3 py-2">{r.channel || "-"}</td>
+                              <td className="px-3 py-2">
+                                <Badge variant="outline">{r.accountId || "-"}</Badge>
+                              </td>
+                              <td className="px-3 py-2">
+                                {r.peerKind || r.peerId ? (
+                                  <span className="font-mono text-xs">{[r.peerKind, r.peerId].filter(Boolean).join("/")}</span>
+                                ) : (
+                                  <span className="text-muted-foreground">-</span>
+                                )}
+                              </td>
+                              <td className="px-3 py-2">
+                                <Badge variant="secondary">{r.agentId}</Badge>
+                              </td>
+                              <td className="px-3 py-2 text-xs">{r.label || "-"}</td>
+                            </tr>
+                          ))}
+                          {filteredRoutingRows.length === 0 ? (
+                            <tr>
+                              <td className="px-3 py-6 text-sm text-muted-foreground" colSpan={5}>{T.routing.noRows}</td>
+                            </tr>
+                          ) : null}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
               </CardContent>
             </Card>
           </TabsContent>

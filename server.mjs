@@ -78,6 +78,94 @@ function safeJsonParse(text) {
   }
 }
 
+function parsePeer(value) {
+  if (!value) return { kind: null, id: null, label: "" };
+
+  if (typeof value === "object") {
+    const kind = value.kind || value.type || value.peerKind || null;
+    const id = value.id || value.peerId || value.target || value.value || null;
+    return { kind, id, label: [kind, id].filter(Boolean).join("/") };
+  }
+
+  const s = String(value).trim();
+  if (!s) return { kind: null, id: null, label: "" };
+
+  const m = s.match(/^([^:/\s]+)[/:](.+)$/);
+  if (m) return { kind: m[1], id: m[2], label: `${m[1]}/${m[2]}` };
+  return { kind: null, id: s, label: s };
+}
+
+function normalizeBindingDetail(detail, agent) {
+  const agentId = agent.id || "";
+  const agentLabel = agent.identityName || agent.name || agentId;
+
+  let channel = "";
+  let accountId = "";
+  let peer = { kind: null, id: null, label: "" };
+  let raw = "";
+
+  if (typeof detail === "string") {
+    raw = detail;
+    const tokens = detail.trim().split(/\s+/).filter(Boolean);
+    if (tokens.length > 0 && !tokens[0].includes("=")) {
+      channel = tokens[0];
+    }
+    const kv = {};
+    for (const token of tokens.slice(1)) {
+      const m = token.match(/^([a-zA-Z0-9_.-]+)=(.+)$/);
+      if (m) kv[m[1]] = m[2];
+    }
+
+    channel = channel || kv.channel || kv.provider || "";
+    accountId = kv.accountId || kv.account || kv.profile || "";
+    if (kv.peer || kv.target || kv.to || kv.chat) {
+      peer = parsePeer(kv.peer || kv.target || kv.to || kv.chat);
+    } else if (kv.peerKind || kv.peerId) {
+      peer = parsePeer({ kind: kv.peerKind || null, id: kv.peerId || null });
+    }
+  } else if (detail && typeof detail === "object") {
+    raw = JSON.stringify(detail);
+    channel = detail.channel || detail.provider || detail.kind || "";
+    accountId = detail.accountId || detail.account || detail.profile || "";
+
+    if (detail.peer || detail.target) {
+      peer = parsePeer(detail.peer || detail.target);
+    } else if (detail.peerKind || detail.peerId) {
+      peer = parsePeer({ kind: detail.peerKind || null, id: detail.peerId || null });
+    }
+  }
+
+  const human = [channel || "-", accountId ? `@${accountId}` : null, peer.label ? `(${peer.label})` : null]
+    .filter(Boolean)
+    .join(" ");
+
+  return {
+    channel: channel || "-",
+    accountId: accountId || "-",
+    peerKind: peer.kind,
+    peerId: peer.id,
+    peerLabel: peer.label || "-",
+    agentId,
+    label: `${human} -> ${agentLabel}`,
+    raw
+  };
+}
+
+function extractTelegramAccounts(channelsList) {
+  const out = new Set();
+  if (Array.isArray(channelsList?.chat?.telegram)) {
+    for (const id of channelsList.chat.telegram) {
+      if (id) out.add(String(id));
+    }
+  }
+  if (Array.isArray(channelsList?.channels)) {
+    for (const item of channelsList.channels) {
+      if (item?.channel === "telegram" && item?.accountId) out.add(String(item.accountId));
+    }
+  }
+  return [...out].sort();
+}
+
 function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, s => ({
     "&": "&amp;",
@@ -133,6 +221,53 @@ app.get("/api/agents", async (_req, res) => {
     const parsed = safeJsonParse(stdout);
     if (!parsed.ok) return res.status(500).json({ ok: false, error: parsed.error, stderr });
     res.json({ ok: true, cached: false, agents: parsed.value });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
+app.get("/api/routing", async (_req, res) => {
+  try {
+    const { stdout, stderr } = await runOpenClaw(["agents", "list", "--json", "--bindings"]);
+    const parsed = safeJsonParse(stdout);
+    if (!parsed.ok) return res.status(500).json({ ok: false, error: parsed.error, stderr });
+
+    const agents = Array.isArray(parsed.value) ? parsed.value : [];
+    const rows = [];
+
+    for (const agent of agents) {
+      const details = Array.isArray(agent.bindingDetails)
+        ? agent.bindingDetails
+        : (Array.isArray(agent.bindings) ? agent.bindings : []);
+
+      if (details.length === 0) continue;
+      for (const detail of details) {
+        rows.push(normalizeBindingDetail(detail, agent));
+      }
+    }
+
+    let telegramAccounts = [];
+    let channelsError = null;
+    try {
+      const channels = await runOpenClaw(["channels", "list", "--json", "--no-usage"]);
+      const channelsParsed = safeJsonParse(channels.stdout);
+      if (channelsParsed.ok) {
+        telegramAccounts = extractTelegramAccounts(channelsParsed.value);
+      } else {
+        channelsError = channelsParsed.error;
+      }
+    } catch (e) {
+      channelsError = String(e);
+    }
+
+    res.json({
+      ok: true,
+      updatedAtMs: Date.now(),
+      total: rows.length,
+      rows,
+      telegramAccounts,
+      channelsError
+    });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e) });
   }
