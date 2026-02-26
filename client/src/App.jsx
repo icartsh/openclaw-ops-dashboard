@@ -23,6 +23,7 @@ import {
 import { Toaster } from "@/components/ui/toaster";
 import { useToast } from "@/hooks/use-toast";
 import { TrendLineChart } from "@/components/TrendLineChart";
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 async function api(path, opts) {
   const res = await fetch(`/api/${path}`, opts);
@@ -341,6 +342,90 @@ function UsageCharts({ trendAgent }) {
   return <div className="grid gap-4 md:grid-cols-2">{charts}</div>;
 }
 
+function P0EventsPanel({ trendP0 }) {
+  const rows = trendP0?.rows || [];
+
+  const byKind = useMemo(() => {
+    const map = new Map();
+    for (const r of rows) {
+      const kind = r.kind || "p0";
+      map.set(kind, (map.get(kind) || 0) + 1);
+    }
+    return [...map.entries()]
+      .map(([kind, count]) => ({ kind, count }))
+      .sort((a, b) => b.count - a.count || a.kind.localeCompare(b.kind));
+  }, [rows]);
+
+  const latest = rows.slice(0, 20);
+
+  if (!trendP0) {
+    return <div className="text-sm text-muted-foreground">{T.status.loading}</div>;
+  }
+
+  return (
+    <div className="grid gap-4 md:grid-cols-2">
+      <Card className="border-muted">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">{T.usage.p0.byKind}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {byKind.length === 0 ? (
+            <div className="text-sm text-muted-foreground">{T.usage.p0.empty}</div>
+          ) : (
+            <div className="space-y-3">
+              <div className="h-[260px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={byKind} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="kind" tick={{ fontSize: 12 }} interval={0} angle={-20} textAnchor="end" height={50} />
+                    <YAxis allowDecimals={false} />
+                    <Tooltip />
+                    <Bar dataKey="count" name="건수" fill="#ef4444" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {byKind.map((x) => (
+                  <Badge key={x.kind} variant="outline">{x.kind}: {x.count}</Badge>
+                ))}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="border-muted">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">{T.usage.p0.latest}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {latest.length === 0 ? (
+            <div className="text-sm text-muted-foreground">{T.usage.p0.empty}</div>
+          ) : (
+            <div className="max-h-[360px] space-y-2 overflow-auto">
+              {latest.map((r) => (
+                <div key={r.event_key} className="rounded-md border p-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="destructive">{r.kind}</Badge>
+                    <Badge variant="outline">{r.agent_id || "-"}</Badge>
+                    <span className="text-xs text-muted-foreground">{fmtTs(r.ts_ms)}</span>
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground break-words">
+                    {r.title || r.event_key}
+                  </div>
+                  <div className="mt-1 text-sm whitespace-pre-wrap break-words">
+                    {String(r.message || "").split("\n").slice(0, 3).join("\n")}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 export default function App() {
   const { toast } = useToast();
   const [tab, setTab] = useState("overview");
@@ -349,12 +434,15 @@ export default function App() {
   const [cron, setCron] = useState(null);
   const [cronTrends, setCronTrends] = useState(null);
   const [sessions, setSessions] = useState(null);
+  const [routing, setRouting] = useState(null);
   const [trendAgent, setTrendAgent] = useState(null);
+  const [trendP0, setTrendP0] = useState(null);
 
   // Sessions UI state
   const [windowKey, setWindowKey] = useState("24h");
   const [agentId, setAgentId] = useState("all");
   const [query, setQuery] = useState("");
+  const [routingQuery, setRoutingQuery] = useState("");
   const [kinds, setKinds] = useState({
     direct: true,
     cron: true,
@@ -387,8 +475,16 @@ export default function App() {
   };
 
   const refreshTrends = async () => {
-    const data = await api("trends/agent-metrics?days=7");
-    setTrendAgent(data);
+    const [agentData, p0Data] = await Promise.all([
+      api("trends/agent-metrics?days=7"),
+      api("trends/p0?days=7"),
+    ]);
+    setTrendAgent(agentData);
+    setTrendP0(p0Data);
+  };
+  const refreshRouting = async () => {
+    const data = await api("routing");
+    setRouting(data);
   };
 
   useEffect(() => {
@@ -398,6 +494,7 @@ export default function App() {
   useEffect(() => {
     if (tab === "cron") refreshCron().catch((e) => toast({ title: T.status.error, description: e.message, variant: "destructive" }));
     if (tab === "sessions") refreshSessions().catch((e) => toast({ title: T.status.error, description: e.message, variant: "destructive" }));
+    if (tab === "routing") refreshRouting().catch((e) => toast({ title: T.status.error, description: e.message, variant: "destructive" }));
     if (tab === "usage") refreshTrends().catch((e) => toast({ title: T.status.error, description: e.message, variant: "destructive" }));
   }, [tab]);
 
@@ -454,6 +551,19 @@ export default function App() {
     refreshCron().catch(() => {});
     refreshOverview().catch(() => {});
   };
+
+  const filteredRoutingRows = useMemo(() => {
+    const rows = routing?.rows || [];
+    const q = routingQuery.trim().toLowerCase();
+    if (!q) return rows;
+
+    return rows.filter((r) => {
+      const hay = [r.channel, r.accountId, r.peerLabel, r.peerKind, r.peerId, r.agentId, r.label]
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }, [routing, routingQuery]);
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -716,26 +826,92 @@ export default function App() {
 
           <TabsContent value="routing" className="mt-4">
             <Card>
-              <CardHeader><CardTitle>라우팅(바인딩)</CardTitle></CardHeader>
-              <CardContent>
-                <div className="text-sm text-muted-foreground">
-                  다음 단계에서 bindings 원문 테이블(채널/accountId/peer)을 예쁘게 렌더링할게요.
-                </div>
+              <CardHeader><CardTitle>{T.routing.title}</CardTitle></CardHeader>
+              <CardContent className="space-y-3">
+                {!routing ? (
+                  <div className="text-sm text-muted-foreground">{T.status.loading}</div>
+                ) : (
+                  <>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Input
+                        className="w-[340px]"
+                        placeholder={T.routing.searchPlaceholder}
+                        value={routingQuery}
+                        onChange={(e) => setRoutingQuery(e.target.value)}
+                      />
+                      <Badge variant="outline">{T.routing.rows}: {filteredRoutingRows.length}</Badge>
+                      <div className="text-xs text-muted-foreground">
+                        {T.routing.telegramAccounts}: {(routing.telegramAccounts || []).join(", ") || "-"}
+                      </div>
+                    </div>
+
+                    <div className="max-h-[520px] overflow-auto rounded-md border">
+                      <table className="w-full text-sm">
+                        <thead className="sticky top-0 bg-background">
+                          <tr className="border-b">
+                            <th className="px-3 py-2 text-left">{T.routing.cols.channel}</th>
+                            <th className="px-3 py-2 text-left">{T.routing.cols.accountId}</th>
+                            <th className="px-3 py-2 text-left">{T.routing.cols.peer}</th>
+                            <th className="px-3 py-2 text-left">{T.routing.cols.target}</th>
+                            <th className="px-3 py-2 text-left">{T.routing.cols.label}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filteredRoutingRows.map((r, idx) => (
+                            <tr key={`${r.agentId}-${r.channel}-${r.accountId}-${idx}`} className="border-b">
+                              <td className="px-3 py-2">{r.channel || "-"}</td>
+                              <td className="px-3 py-2">
+                                <Badge variant="outline">{r.accountId || "-"}</Badge>
+                              </td>
+                              <td className="px-3 py-2">
+                                {r.peerKind || r.peerId ? (
+                                  <span className="font-mono text-xs">{[r.peerKind, r.peerId].filter(Boolean).join("/")}</span>
+                                ) : (
+                                  <span className="text-muted-foreground">-</span>
+                                )}
+                              </td>
+                              <td className="px-3 py-2">
+                                <Badge variant="secondary">{r.agentId}</Badge>
+                              </td>
+                              <td className="px-3 py-2 text-xs">{r.label || "-"}</td>
+                            </tr>
+                          ))}
+                          {filteredRoutingRows.length === 0 ? (
+                            <tr>
+                              <td className="px-3 py-6 text-sm text-muted-foreground" colSpan={5}>{T.routing.noRows}</td>
+                            </tr>
+                          ) : null}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
 
           <TabsContent value="usage" className="mt-4">
-            <Card>
-              <CardHeader><CardTitle>사용량(7일)</CardTitle></CardHeader>
-              <CardContent className="space-y-4">
-                {!trendAgent ? (
-                  <div className="text-sm text-muted-foreground">{T.status.loading}</div>
-                ) : (
-                  <UsageCharts trendAgent={trendAgent} />
-                )}
-              </CardContent>
-            </Card>
+            <div className="space-y-4">
+              <Card>
+                <CardHeader><CardTitle>{T.usage.title}</CardTitle></CardHeader>
+                <CardContent className="space-y-4">
+                  {!trendAgent ? (
+                    <div className="text-sm text-muted-foreground">{T.status.loading}</div>
+                  ) : (
+                    <UsageCharts trendAgent={trendAgent} />
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>{T.usage.p0.title}</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <P0EventsPanel trendP0={trendP0} />
+                </CardContent>
+              </Card>
+            </div>
           </TabsContent>
         </Tabs>
       </div>

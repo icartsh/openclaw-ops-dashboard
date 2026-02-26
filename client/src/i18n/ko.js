@@ -94,4 +94,27 @@ export const KO = {
       haru: "하루 · 개발자",
     },
   },
+  routing: {
+    title: "라우팅(바인딩)",
+    searchPlaceholder: "검색(채널/accountId/peer/agent/라벨)",
+    telegramAccounts: "텔레그램 계정",
+    rows: "행",
+    cols: {
+      channel: "채널",
+      accountId: "accountId",
+      peer: "peer",
+      target: "타깃 agentId",
+      label: "라벨",
+    },
+    noRows: "자비스: 표시할 라우팅 바인딩이 없어요.",
+  },
+  usage: {
+    title: "사용량(7일)",
+    p0: {
+      title: "P0 이벤트(최근 7일)",
+      byKind: "종류별 건수",
+      latest: "최신 이벤트",
+      empty: "자비스: 최근 7일 P0 이벤트가 없어요.",
+    },
+  },
 };

@@ -78,6 +78,94 @@ function safeJsonParse(text) {
   }
 }
 
+function parsePeer(value) {
+  if (!value) return { kind: null, id: null, label: "" };
+
+  if (typeof value === "object") {
+    const kind = value.kind || value.type || value.peerKind || null;
+    const id = value.id || value.peerId || value.target || value.value || null;
+    return { kind, id, label: [kind, id].filter(Boolean).join("/") };
+  }
+
+  const s = String(value).trim();
+  if (!s) return { kind: null, id: null, label: "" };
+
+  const m = s.match(/^([^:/\s]+)[/:](.+)$/);
+  if (m) return { kind: m[1], id: m[2], label: `${m[1]}/${m[2]}` };
+  return { kind: null, id: s, label: s };
+}
+
+function normalizeBindingDetail(detail, agent) {
+  const agentId = agent.id || "";
+  const agentLabel = agent.identityName || agent.name || agentId;
+
+  let channel = "";
+  let accountId = "";
+  let peer = { kind: null, id: null, label: "" };
+  let raw = "";
+
+  if (typeof detail === "string") {
+    raw = detail;
+    const tokens = detail.trim().split(/\s+/).filter(Boolean);
+    if (tokens.length > 0 && !tokens[0].includes("=")) {
+      channel = tokens[0];
+    }
+    const kv = {};
+    for (const token of tokens.slice(1)) {
+      const m = token.match(/^([a-zA-Z0-9_.-]+)=(.+)$/);
+      if (m) kv[m[1]] = m[2];
+    }
+
+    channel = channel || kv.channel || kv.provider || "";
+    accountId = kv.accountId || kv.account || kv.profile || "";
+    if (kv.peer || kv.target || kv.to || kv.chat) {
+      peer = parsePeer(kv.peer || kv.target || kv.to || kv.chat);
+    } else if (kv.peerKind || kv.peerId) {
+      peer = parsePeer({ kind: kv.peerKind || null, id: kv.peerId || null });
+    }
+  } else if (detail && typeof detail === "object") {
+    raw = JSON.stringify(detail);
+    channel = detail.channel || detail.provider || detail.kind || "";
+    accountId = detail.accountId || detail.account || detail.profile || "";
+
+    if (detail.peer || detail.target) {
+      peer = parsePeer(detail.peer || detail.target);
+    } else if (detail.peerKind || detail.peerId) {
+      peer = parsePeer({ kind: detail.peerKind || null, id: detail.peerId || null });
+    }
+  }
+
+  const human = [channel || "-", accountId ? `@${accountId}` : null, peer.label ? `(${peer.label})` : null]
+    .filter(Boolean)
+    .join(" ");
+
+  return {
+    channel: channel || "-",
+    accountId: accountId || "-",
+    peerKind: peer.kind,
+    peerId: peer.id,
+    peerLabel: peer.label || "-",
+    agentId,
+    label: `${human} -> ${agentLabel}`,
+    raw
+  };
+}
+
+function extractTelegramAccounts(channelsList) {
+  const out = new Set();
+  if (Array.isArray(channelsList?.chat?.telegram)) {
+    for (const id of channelsList.chat.telegram) {
+      if (id) out.add(String(id));
+    }
+  }
+  if (Array.isArray(channelsList?.channels)) {
+    for (const item of channelsList.channels) {
+      if (item?.channel === "telegram" && item?.accountId) out.add(String(item.accountId));
+    }
+  }
+  return [...out].sort();
+}
+
 function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, s => ({
     "&": "&amp;",
@@ -133,6 +221,53 @@ app.get("/api/agents", async (_req, res) => {
     const parsed = safeJsonParse(stdout);
     if (!parsed.ok) return res.status(500).json({ ok: false, error: parsed.error, stderr });
     res.json({ ok: true, cached: false, agents: parsed.value });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
+app.get("/api/routing", async (_req, res) => {
+  try {
+    const { stdout, stderr } = await runOpenClaw(["agents", "list", "--json", "--bindings"]);
+    const parsed = safeJsonParse(stdout);
+    if (!parsed.ok) return res.status(500).json({ ok: false, error: parsed.error, stderr });
+
+    const agents = Array.isArray(parsed.value) ? parsed.value : [];
+    const rows = [];
+
+    for (const agent of agents) {
+      const details = Array.isArray(agent.bindingDetails)
+        ? agent.bindingDetails
+        : (Array.isArray(agent.bindings) ? agent.bindings : []);
+
+      if (details.length === 0) continue;
+      for (const detail of details) {
+        rows.push(normalizeBindingDetail(detail, agent));
+      }
+    }
+
+    let telegramAccounts = [];
+    let channelsError = null;
+    try {
+      const channels = await runOpenClaw(["channels", "list", "--json", "--no-usage"]);
+      const channelsParsed = safeJsonParse(channels.stdout);
+      if (channelsParsed.ok) {
+        telegramAccounts = extractTelegramAccounts(channelsParsed.value);
+      } else {
+        channelsError = channelsParsed.error;
+      }
+    } catch (e) {
+      channelsError = String(e);
+    }
+
+    res.json({
+      ok: true,
+      updatedAtMs: Date.now(),
+      total: rows.length,
+      rows,
+      telegramAccounts,
+      channelsError
+    });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e) });
   }
@@ -267,8 +402,30 @@ function looksIdlePrompt(lastLines) {
   const s = String(lastLines).trim();
   if (!s) return false;
   const lines = s.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  const last = lines[lines.length - 1] || "";
-  return last === "❯" || last.startsWith("❯ ");
+  const nearEnd = lines.slice(-6);
+  const lastTwo = nearEnd.slice(-2);
+
+  if (lastTwo.some((line) => /^❯(?:\s.*)?$/.test(line))) {
+    return true;
+  }
+
+  const strongPrompts = [
+    /\bpress\s+enter\b/i,
+    /\bwhat\s+next\b/i,
+    /\bcreate\s+(?:a\s+)?pr\b/i
+  ];
+  const weakPrompts = [
+    /\bcontinue\b/i,
+    /\bcommit\b/i
+  ];
+  const intentCues = /\?|(?:please|ready|waiting|awaiting|your turn|next step|now)\b/i;
+
+  for (const line of nearEnd.slice(-4).reverse()) {
+    if (strongPrompts.some((re) => re.test(line))) return true;
+    if (weakPrompts.some((re) => re.test(line)) && intentCues.test(line)) return true;
+  }
+
+  return false;
 }
 
 function tailLines(text, n = 10) {
@@ -298,7 +455,7 @@ async function computeP0() {
     const title = j.name || j.id;
     const reason = st.lastError ? `원인: ${st.lastError}` : "원인: (미상)";
     const msg = `[P0][자비스] 크론 오류 감지: ${title}\n- jobId: ${j.id}\n- 에이전트: ${j.agentId}\n- 상태: ${(st.lastStatus || st.lastRunStatus || "error")} (연속 ${(st.consecutiveErrors || 0)}회)\n- ${reason}\n- 대시보드: https://jarvis.icartsh.com/ (크론 작업 탭)`;
-    p0.push({ key, msg, channel: "jarvis" });
+    p0.push({ key, msg, channel: "jarvis", kind: "cron_error", agentId: j.agentId || "main" });
   }
 
   // ── P0: token spike (rough) ───────────────────────────────────────
@@ -314,7 +471,7 @@ async function computeP0() {
     if (total >= TOKEN_P0) {
       const key = `p0:tokens:${agentId}:${Math.floor(total/10000)}`;
       const msg = `[P0][자비스] 토큰 사용량 급증: ${agentId}\n- 최근 24시간 토큰: ${Number(total).toLocaleString()}\n- 기준: ${TOKEN_P0.toLocaleString()}\n- 대시보드: https://jarvis.icartsh.com/ (사용량 탭)`;
-      p0.push({ key, msg, channel: "jarvis" });
+      p0.push({ key, msg, channel: "jarvis", kind: "token_spike", agentId });
     }
   }
 
@@ -352,7 +509,7 @@ async function computeP0() {
         { text: "대시보드 열기", url: "https://jarvis.icartsh.com/" }
       ]];
 
-      p0.push({ key, msg, channel: "haru", buttons });
+      p0.push({ key, msg, channel: "haru", buttons, kind: "idle_input", agentId: "coding" });
     }
   }
 
@@ -364,21 +521,21 @@ async function computeP0() {
     }
   });
 
-  // ── Send with cooldown ────────────────────────────────────────────
+  // ── Persist + send with cooldown ─────────────────────────────────
   for (const item of p0) {
-    if (!shouldSend(item.key, now)) continue;
-
     // Persist P0 to DB (best-effort)
     try {
       insertP0Event(db, {
         tsMs: now,
         key: item.key,
-        kind: item.channel === "haru" ? "idle_input" : (item.key.startsWith("p0:cron:") ? "cron_error" : (item.key.startsWith("p0:tokens:") ? "token_spike" : "p0")),
-        agentId: item.channel === "haru" ? "coding" : "main",
+        kind: item.kind || "p0",
+        agentId: item.agentId || null,
         title: item.key,
         message: item.msg
       });
     } catch {}
+
+    if (!shouldSend(item.key, now)) continue;
 
     if (item.channel === "haru") {
       await sendTelegramP0Haru(item.msg, item.buttons || null);

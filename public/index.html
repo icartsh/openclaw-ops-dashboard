@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>자비스 운영 대시보드 (MVP)</title>
+  <style>
+    :root { --bg:#0b1020; --card:#121a33; --text:#e8ecff; --muted:#9aa6d6; --bad:#ff6b6b; --ok:#2dd4bf; --line:#24305a; --jarvis:#22c55e; --haru:#a78bfa; }
+    body{ margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; background:var(--bg); color:var(--text); }
+    header{ padding:16px 18px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:center; }
+    header h1{ margin:0; font-size:16px; }
+    header .pill{ padding:4px 10px; border:1px solid var(--line); border-radius:999px; color:var(--muted); font-size:12px; }
+    nav{ display:flex; gap:8px; padding:10px 18px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+    nav button{ background:transparent; color:var(--muted); border:1px solid var(--line); border-radius:10px; padding:8px 10px; cursor:pointer; }
+    nav button.active{ color:var(--text); border-color:#3b82f6; }
+    main{ padding:16px 18px; }
+    .grid{ display:grid; grid-template-columns: repeat(12, 1fr); gap:12px; }
+    .card{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:12px; grid-column: span 12; }
+    @media(min-width: 900px){ .card.half{ grid-column: span 6; } .card.third{ grid-column: span 4; } }
+    .card h2{ margin:0 0 8px 0; font-size:14px; }
+    .muted{ color:var(--muted); }
+    table{ width:100%; border-collapse:collapse; font-size:12px; }
+    th,td{ border-bottom:1px solid var(--line); padding:8px 6px; text-align:left; vertical-align:top; }
+    th{ color:var(--muted); font-weight:600; }
+    .badge{ display:inline-block; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--muted); font-size:11px; }
+    .badge.ok{ color:var(--ok); border-color: rgba(45,212,191,.4); }
+    .badge.bad{ color:var(--bad); border-color: rgba(255,107,107,.4); }
+    .badge.role-jarvis{ color: var(--jarvis); border-color: rgba(34,197,94,.4); }
+    .badge.role-haru{ color: var(--haru); border-color: rgba(167,139,250,.4); }
+    .row{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .kpi{ font-size:22px; font-weight:700; }
+    .btn{ background:#1f2a52; border:1px solid var(--line); color:var(--text); padding:6px 10px; border-radius:10px; cursor:pointer; font-size:12px; }
+    .btn.danger{ background:#3b1e2b; }
+    pre{ white-space:pre-wrap; word-break:break-word; background:#0a0f1f; border:1px solid var(--line); padding:10px; border-radius:12px; color:#c7d2fe; font-size:11px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>자비스 운영 대시보드 <span class="muted">(MVP)</span></h1>
+  <span id="status" class="pill">불러오는 중…</span>
+  <span class="pill">라이언 전용</span>
+</header>
+<nav id="tabs"></nav>
+<main>
+  <div id="view"></div>
+</main>
+<script>
+const tabs = [
+  { id: 'overview', label: 'A) 에이전트 개요' },
+  { id: 'sessions', label: 'B) 세션' },
+  { id: 'cron', label: 'C) 크론 작업' },
+  { id: 'routing', label: 'D) 라우팅(바인딩)' },
+  { id: 'usage', label: 'E) 사용량' },
+];
+
+const $tabs = document.getElementById('tabs');
+const $view = document.getElementById('view');
+const $status = document.getElementById('status');
+
+let cache = {};
+
+function setStatus(text, ok=true){
+  $status.textContent = text;
+  $status.style.borderColor = ok ? 'rgba(45,212,191,.35)' : 'rgba(255,107,107,.35)';
+}
+
+async function api(path){
+  const res = await fetch('/api/' + path);
+  const json = await res.json();
+  if(!json.ok) throw new Error(json.error || 'api error');
+  return json;
+}
+
+function tabButton(t, active){
+  const b = document.createElement('button');
+  b.textContent = t.label;
+  b.className = active ? 'active' : '';
+  b.onclick = () => navigate(t.id);
+  return b;
+}
+
+function renderTabs(active){
+  $tabs.innerHTML = '';
+  tabs.forEach(t => $tabs.appendChild(tabButton(t, t.id===active)));
+}
+
+function fmtAge(ms){
+  const s = Math.floor(ms/1000);
+  if(s<60) return s+'초';
+  const m = Math.floor(s/60);
+  if(m<60) return m+'분';
+  const h = Math.floor(m/60);
+  return h+'시간';
+}
+
+function fmtTs(ms){
+  try{ return new Date(ms).toLocaleString(); }catch{ return String(ms); }
+}
+
+function card(title, inner, cls=''){
+  return `<section class="card ${cls}"><h2>${title}</h2>${inner}</section>`;
+}
+
+async function renderOverview(){
+  const data = await api('overview');
+  setStatus('정상 · 최근 ' + data.activeMinutes + '분');
+
+  const agents = data.agents;
+
+  const roleMeta = (agentId) => {
+    if(agentId === 'main')   return { label: '자비스 · 개인비서', cls: 'role-jarvis' };
+    if(agentId === 'coding') return { label: '하루 · 개발자', cls: 'role-haru' };
+    return { label: '에이전트', cls: '' };
+  };
+
+  const rows = agents.map(a => {
+    const rm = roleMeta(a.agentId);
+    const roleBadge = rm.cls ? `<span class="badge ${rm.cls}">${rm.label}</span>` : `<span class="badge">${rm.label}</span>`;
+
+    return `
+    <tr>
+      <td>
+        <div class="row">
+          <div>${a.emoji ? a.emoji+' ' : ''}<b>${a.name}</b> <span class="muted">(${a.agentId})</span></div>
+          ${roleBadge}
+        </div>
+      </td>
+      <td><span class="badge">${a.model || ''}</span></td>
+      <td><span class="badge">세션 ${a.sessionsActive}</span></td>
+      <td><span class="badge">토큰(24h) ${a.tokens24h.toLocaleString()}</span></td>
+      <td>${a.cronErrors>0 ? `<span class="badge bad">크론 오류 ${a.cronErrors}/${a.cronJobs}</span>` : `<span class="badge ok">크론 정상 ${a.cronJobs}</span>`}</td>
+    </tr>
+  `;
+  }).join('');
+
+  $view.innerHTML = `
+    <div class="grid">
+      ${card('에이전트', `<table><thead><tr><th>에이전트/역할</th><th>모델</th><th>세션</th><th>토큰</th><th>크론</th></tr></thead><tbody>${rows}</tbody></table>`, 'card')}
+      ${card('원본 데이터(디버그)', `<details><summary class="muted">원본 JSON 보기</summary><pre>${escapeHtml(JSON.stringify(data.raw, null, 2))}</pre></details>`)}
+    </div>
+  `;
+}
+
+async function renderSessions(){
+  // UI state
+  const state = (window.__sessionsState ||= { windowKey: '24h', agentId: 'all', query: '', kinds: { direct:true, cron:true, run:true, group:true, channel:true } });
+
+  const data = await api(`sessions?window=${encodeURIComponent(state.windowKey)}`);
+  setStatus(`정상 · 세션 ${data.count} · 범위 ${state.windowKey}`);
+
+  const sessions = (data.sessions || []).slice().sort((a,b)=>b.updatedAt-a.updatedAt);
+
+  // helpers
+  const kindOfKey = (key) => {
+    if (key.includes(':cron:') && key.includes(':run:')) return 'run';
+    if (key.includes(':cron:')) return 'cron';
+    if (key.includes(':group:')) return 'group';
+    if (key.includes(':channel:')) return 'channel';
+    return 'direct';
+  };
+
+  const q = state.query.trim().toLowerCase();
+
+  const filtered = sessions.filter(s => {
+    if (state.agentId !== 'all' && s.agentId !== state.agentId) return false;
+
+    const k = kindOfKey(s.key || '');
+    if (!state.kinds[k]) return false;
+
+    if (!q) return true;
+    const hay = [s.key, s.agentId, s.kind, s.modelProvider, s.model].join(' ').toLowerCase();
+    return hay.includes(q);
+  });
+
+  const rows = filtered.map(s => {
+    const k = kindOfKey(s.key || '');
+    const kindLabel = ({direct:'DM', cron:'CRON', run:'RUN', group:'GROUP', channel:'CHANNEL'})[k] || k;
+
+    return `
+      <tr>
+        <td>
+          <div class="row">
+            <span class="badge">${escapeHtml(s.agentId)}</span>
+            <span class="badge">${kindLabel}</span>
+            <span class="muted">${escapeHtml(s.kind || '')}</span>
+          </div>
+          <div style="margin-top:6px"><code>${escapeHtml(s.key)}</code></div>
+        </td>
+        <td>${fmtTs(s.updatedAt)}<div class="muted">경과 ${fmtAge(s.ageMs)}</div></td>
+        <td><span class="badge">${escapeHtml(`${s.modelProvider}/${s.model}`)}</span></td>
+        <td>
+          <div class="row">
+            <span class="badge">입력 ${s.inputTokens ?? '-'} </span>
+            <span class="badge">출력 ${s.outputTokens ?? '-'} </span>
+            <span class="badge">합계 ${s.totalTokens ?? '-'} </span>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  const controls = `
+    <div class="row" style="margin:6px 0 10px 0">
+      <span class="badge">표시 범위</span>
+      <select id="sessWindow" class="btn">
+        <option value="24h">최근 24시간</option>
+        <option value="7d">최근 7일</option>
+        <option value="30d">최근 30일</option>
+      </select>
+
+      <span class="badge">에이전트</span>
+      <select id="sessAgent" class="btn">
+        <option value="all">전체</option>
+        <option value="main">자비스(main)</option>
+        <option value="coding">하루(coding)</option>
+      </select>
+
+      <input id="sessQuery" class="btn" style="min-width:240px" placeholder="검색(키/모델/에이전트/종류)" value="${escapeHtml(state.query)}" />
+
+      <span class="badge">종류</span>
+      ${['direct','cron','run','group','channel'].map(k => {
+        const label = ({direct:'DM',cron:'CRON',run:'RUN',group:'GROUP',channel:'CHANNEL'})[k];
+        const on = state.kinds[k] ? 'checked' : '';
+        return `<label class="badge" style="cursor:pointer"><input type="checkbox" data-kind="${k}" ${on} /> ${label}</label>`;
+      }).join(' ')}
+
+      <span class="muted">표시: ${filtered.length} / 전체 ${sessions.length}</span>
+    </div>
+  `;
+
+  $view.innerHTML = `
+    <div class="grid">
+      ${card(`세션 목록`, `${controls}<table><thead><tr><th>키</th><th>업데이트</th><th>모델</th><th>토큰</th></tr></thead><tbody>${rows}</tbody></table>`)}
+    </div>
+  `;
+
+  // wire controls
+  const $w = document.getElementById('sessWindow');
+  const $a = document.getElementById('sessAgent');
+  const $qEl = document.getElementById('sessQuery');
+
+  $w.value = state.windowKey;
+  $a.value = state.agentId;
+
+  $w.onchange = async () => { state.windowKey = $w.value; await renderSessions(); };
+  $a.onchange = async () => { state.agentId = $a.value; await renderSessions(); };
+
+  let t = null;
+  $qEl.oninput = () => {
+    state.query = $qEl.value;
+    clearTimeout(t);
+    t = setTimeout(() => renderSessions(), 200);
+  };
+
+  document.querySelectorAll('input[type=checkbox][data-kind]').forEach(cb => {
+    cb.onchange = () => {
+      const k = cb.getAttribute('data-kind');
+      state.kinds[k] = cb.checked;
+      renderSessions();
+    };
+  });
+}
+
+async function renderCron(){
+  const data = await api('cron');
+  setStatus(`정상 · 작업 ${data.jobs.length}`);
+
+  const rows = data.jobs.map(j => {
+    const st = j.state || {};
+    const bad = st.lastStatus === 'error' || st.lastRunStatus === 'error' || (st.consecutiveErrors||0) > 0;
+    const statusBadge = bad ? `<span class="badge bad">${escapeHtml(st.lastStatus || '오류')}</span>` : `<span class="badge ok">${escapeHtml(st.lastStatus || '정상')}</span>`;
+    const err = st.lastError ? `<div class="muted">${escapeHtml(st.lastError)}</div>` : '';
+    const btn = j.enabled ? `<button class="btn danger" data-act="disable" data-id="${j.id}" data-name="${escapeHtml(j.name || j.id)}">비활성화</button>` : `<button class="btn" data-act="enable" data-id="${j.id}" data-name="${escapeHtml(j.name || j.id)}">활성화</button>`;
+    return `
+      <tr>
+        <td><b>${escapeHtml(j.name || j.id)}</b><div class="muted">${j.id} · 에이전트=${j.agentId}</div></td>
+        <td>${j.schedule?.kind || ''} <span class="muted">${escapeHtml(j.schedule?.expr || '')}</span></td>
+        <td>${j.enabled ? `<span class="badge ok">활성</span>` : `<span class="badge">비활성</span>`}</td>
+        <td>${statusBadge}<div class="muted">다음 실행: ${st.nextRunAtMs ? fmtTs(st.nextRunAtMs) : '-'}</div>${err}</td>
+        <td>${btn} <button class="btn" data-act="run" data-id="${j.id}">즉시 실행</button></td>
+      </tr>
+    `;
+  }).join('');
+
+  $view.innerHTML = `
+    <div class="grid">
+      ${card('크론 작업', `<table><thead><tr><th>작업</th><th>스케줄</th><th>상태</th><th>최근 결과</th><th>조작</th></tr></thead><tbody>${rows}</tbody></table>`)}
+      ${card('안내', `<div class="muted">MVP에서는 "활성/비활성/즉시 실행"만 제공합니다. 디테일(편집/필터/알림 규칙)은 다음 단계에서 붙여요.</div>`)}
+    </div>
+  `;
+
+  // wire buttons
+  document.querySelectorAll('button[data-act]').forEach(b => {
+    b.onclick = async () => {
+      const id = b.getAttribute('data-id');
+      const act = b.getAttribute('data-act');
+      b.disabled = true;
+      try{
+        const jobName = b.getAttribute('data-name') || id;
+        const ok = confirm(`[확인] 크론 작업을 실행할까요?\n- 작업: ${jobName}\n- 동작: ${act}`);
+        if(!ok){ b.disabled = false; return; }
+
+        setStatus('작업 중…');
+        const res = await fetch(`/api/cron/${id}/${act}`, { method: 'POST', headers: {'content-type':'application/json'}, body: '{}' });
+        const json = await res.json();
+        if(!json.ok) throw new Error(json.error || '작업 실패');
+        await renderCron();
+      }catch(e){
+        setStatus('오류: ' + e.message, false);
+        b.disabled = false;
+      }
+    };
+  });
+}
+
+async function renderRouting(){
+  const data = await api('agents');
+  setStatus('정상');
+
+  const rows = data.agents.map(a => {
+    const routes = (a.routes || []).map(r => `<div class="badge">${escapeHtml(r)}</div>`).join(' ');
+    return `
+      <tr>
+        <td>${a.identityEmoji ? a.identityEmoji+' ' : ''}<b>${escapeHtml(a.identityName || a.name || a.id)}</b><div class="muted">agentId=${a.id}</div></td>
+        <td><code>${escapeHtml(a.workspace || '')}</code></td>
+        <td>${a.bindings ?? 0}</td>
+        <td>${routes || '<span class="muted">(라우트 없음)</span>'}</td>
+      </tr>
+    `;
+  }).join('');
+
+  $view.innerHTML = `
+    <div class="grid">
+      ${card('라우팅 / 바인딩(요약)', `<table><thead><tr><th>에이전트</th><th>워크스페이스</th><th>바인딩 수</th><th>라우트</th></tr></thead><tbody>${rows}</tbody></table>`)}
+      ${card('참고', `<div class="muted">다음 버전에서 bindings를 채널/accountId/peer 단위로 더 예쁘게 보여줄게요.</div>`)}
+    </div>
+  `;
+}
+
+async function renderUsage(){
+  const data = await api('sessions');
+  const sessions = data.sessions || [];
+  setStatus('정상');
+
+  // Simple aggregation by agentId + model
+  const byAgent = {};
+  for(const s of sessions){
+    const k = s.agentId;
+    byAgent[k] ||= { agentId:k, totalTokens:0, sessions:0, byModel:{} };
+    byAgent[k].sessions++;
+    byAgent[k].totalTokens += Number(s.totalTokens || 0);
+    const mk = `${s.modelProvider}/${s.model}`;
+    byAgent[k].byModel[mk] = (byAgent[k].byModel[mk]||0) + Number(s.totalTokens || 0);
+  }
+
+  const cards = Object.values(byAgent).map(a => {
+    const lines = Object.entries(a.byModel).sort((x,y)=>y[1]-x[1]).map(([m,t])=>`<tr><td>${escapeHtml(m)}</td><td>${t.toLocaleString()}</td></tr>`).join('');
+    return card(`${a.agentId} 사용량`, `<div class="row"><div class="kpi">${a.totalTokens.toLocaleString()}</div><div class="muted">토큰 (최근 24시간)</div><span class="badge">세션 ${a.sessions}</span></div><div style="margin-top:10px"><table><thead><tr><th>모델</th><th>토큰</th></tr></thead><tbody>${lines}</tbody></table></div>`, 'half');
+  }).join('');
+
+  $view.innerHTML = `<div class="grid">${cards}</div>`;
+}
+
+function escapeHtml(str){
+  return String(str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
+}
+
+async function navigate(id){
+  renderTabs(id);
+  $view.innerHTML = '<div class="muted">불러오는 중…</div>';
+  try{
+    if(id==='overview') return await renderOverview();
+    if(id==='sessions') return await renderSessions();
+    if(id==='cron') return await renderCron();
+    if(id==='routing') return await renderRouting();
+    if(id==='usage') return await renderUsage();
+  }catch(e){
+    setStatus('오류: '+e.message, false);
+    $view.innerHTML = `<pre>${escapeHtml(e.stack || String(e))}</pre>`;
+  }
+}
+
+renderTabs('overview');
+navigate('overview');
+</script>
+</body>
+</html>
