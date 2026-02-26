@@ -23,6 +23,7 @@ import {
 import { Toaster } from "@/components/ui/toaster";
 import { useToast } from "@/hooks/use-toast";
 import { TrendLineChart } from "@/components/TrendLineChart";
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 async function api(path, opts) {
   const res = await fetch(`/api/${path}`, opts);
@@ -341,6 +342,90 @@ function UsageCharts({ trendAgent }) {
   return <div className="grid gap-4 md:grid-cols-2">{charts}</div>;
 }
 
+function P0EventsPanel({ trendP0 }) {
+  const rows = trendP0?.rows || [];
+
+  const byKind = useMemo(() => {
+    const map = new Map();
+    for (const r of rows) {
+      const kind = r.kind || "p0";
+      map.set(kind, (map.get(kind) || 0) + 1);
+    }
+    return [...map.entries()]
+      .map(([kind, count]) => ({ kind, count }))
+      .sort((a, b) => b.count - a.count || a.kind.localeCompare(b.kind));
+  }, [rows]);
+
+  const latest = rows.slice(0, 20);
+
+  if (!trendP0) {
+    return <div className="text-sm text-muted-foreground">{T.status.loading}</div>;
+  }
+
+  return (
+    <div className="grid gap-4 md:grid-cols-2">
+      <Card className="border-muted">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">{T.usage.p0.byKind}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {byKind.length === 0 ? (
+            <div className="text-sm text-muted-foreground">{T.usage.p0.empty}</div>
+          ) : (
+            <div className="space-y-3">
+              <div className="h-[260px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={byKind} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="kind" tick={{ fontSize: 12 }} interval={0} angle={-20} textAnchor="end" height={50} />
+                    <YAxis allowDecimals={false} />
+                    <Tooltip />
+                    <Bar dataKey="count" name="건수" fill="#ef4444" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {byKind.map((x) => (
+                  <Badge key={x.kind} variant="outline">{x.kind}: {x.count}</Badge>
+                ))}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="border-muted">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">{T.usage.p0.latest}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {latest.length === 0 ? (
+            <div className="text-sm text-muted-foreground">{T.usage.p0.empty}</div>
+          ) : (
+            <div className="max-h-[360px] space-y-2 overflow-auto">
+              {latest.map((r) => (
+                <div key={r.event_key} className="rounded-md border p-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="destructive">{r.kind}</Badge>
+                    <Badge variant="outline">{r.agent_id || "-"}</Badge>
+                    <span className="text-xs text-muted-foreground">{fmtTs(r.ts_ms)}</span>
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground break-words">
+                    {r.title || r.event_key}
+                  </div>
+                  <div className="mt-1 text-sm whitespace-pre-wrap break-words">
+                    {String(r.message || "").split("\n").slice(0, 3).join("\n")}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 export default function App() {
   const { toast } = useToast();
   const [tab, setTab] = useState("overview");
@@ -351,6 +436,7 @@ export default function App() {
   const [sessions, setSessions] = useState(null);
   const [routing, setRouting] = useState(null);
   const [trendAgent, setTrendAgent] = useState(null);
+  const [trendP0, setTrendP0] = useState(null);
 
   // Sessions UI state
   const [windowKey, setWindowKey] = useState("24h");
@@ -389,8 +475,12 @@ export default function App() {
   };
 
   const refreshTrends = async () => {
-    const data = await api("trends/agent-metrics?days=7");
-    setTrendAgent(data);
+    const [agentData, p0Data] = await Promise.all([
+      api("trends/agent-metrics?days=7"),
+      api("trends/p0?days=7"),
+    ]);
+    setTrendAgent(agentData);
+    setTrendP0(p0Data);
   };
   const refreshRouting = async () => {
     const data = await api("routing");
@@ -801,16 +891,27 @@ export default function App() {
           </TabsContent>
 
           <TabsContent value="usage" className="mt-4">
-            <Card>
-              <CardHeader><CardTitle>사용량(7일)</CardTitle></CardHeader>
-              <CardContent className="space-y-4">
-                {!trendAgent ? (
-                  <div className="text-sm text-muted-foreground">{T.status.loading}</div>
-                ) : (
-                  <UsageCharts trendAgent={trendAgent} />
-                )}
-              </CardContent>
-            </Card>
+            <div className="space-y-4">
+              <Card>
+                <CardHeader><CardTitle>{T.usage.title}</CardTitle></CardHeader>
+                <CardContent className="space-y-4">
+                  {!trendAgent ? (
+                    <div className="text-sm text-muted-foreground">{T.status.loading}</div>
+                  ) : (
+                    <UsageCharts trendAgent={trendAgent} />
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>{T.usage.p0.title}</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <P0EventsPanel trendP0={trendP0} />
+                </CardContent>
+              </Card>
+            </div>
           </TabsContent>
         </Tabs>
       </div>

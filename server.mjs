@@ -433,7 +433,7 @@ async function computeP0() {
     const title = j.name || j.id;
     const reason = st.lastError ? `원인: ${st.lastError}` : "원인: (미상)";
     const msg = `[P0][자비스] 크론 오류 감지: ${title}\n- jobId: ${j.id}\n- 에이전트: ${j.agentId}\n- 상태: ${(st.lastStatus || st.lastRunStatus || "error")} (연속 ${(st.consecutiveErrors || 0)}회)\n- ${reason}\n- 대시보드: https://jarvis.icartsh.com/ (크론 작업 탭)`;
-    p0.push({ key, msg, channel: "jarvis" });
+    p0.push({ key, msg, channel: "jarvis", kind: "cron_error", agentId: j.agentId || "main" });
   }
 
   // ── P0: token spike (rough) ───────────────────────────────────────
@@ -449,7 +449,7 @@ async function computeP0() {
     if (total >= TOKEN_P0) {
       const key = `p0:tokens:${agentId}:${Math.floor(total/10000)}`;
       const msg = `[P0][자비스] 토큰 사용량 급증: ${agentId}\n- 최근 24시간 토큰: ${Number(total).toLocaleString()}\n- 기준: ${TOKEN_P0.toLocaleString()}\n- 대시보드: https://jarvis.icartsh.com/ (사용량 탭)`;
-      p0.push({ key, msg, channel: "jarvis" });
+      p0.push({ key, msg, channel: "jarvis", kind: "token_spike", agentId });
     }
   }
 
@@ -487,7 +487,7 @@ async function computeP0() {
         { text: "대시보드 열기", url: "https://jarvis.icartsh.com/" }
       ]];
 
-      p0.push({ key, msg, channel: "haru", buttons });
+      p0.push({ key, msg, channel: "haru", buttons, kind: "idle_input", agentId: "coding" });
     }
   }
 
@@ -499,21 +499,21 @@ async function computeP0() {
     }
   });
 
-  // ── Send with cooldown ────────────────────────────────────────────
+  // ── Persist + send with cooldown ─────────────────────────────────
   for (const item of p0) {
-    if (!shouldSend(item.key, now)) continue;
-
     // Persist P0 to DB (best-effort)
     try {
       insertP0Event(db, {
         tsMs: now,
         key: item.key,
-        kind: item.channel === "haru" ? "idle_input" : (item.key.startsWith("p0:cron:") ? "cron_error" : (item.key.startsWith("p0:tokens:") ? "token_spike" : "p0")),
-        agentId: item.channel === "haru" ? "coding" : "main",
+        kind: item.kind || "p0",
+        agentId: item.agentId || null,
         title: item.key,
         message: item.msg
       });
     } catch {}
+
+    if (!shouldSend(item.key, now)) continue;
 
     if (item.channel === "haru") {
       await sendTelegramP0Haru(item.msg, item.buttons || null);
